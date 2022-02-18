@@ -3,164 +3,161 @@ Creating gamemodes
 
 Creating a gamemode is significantly more complex than making mutators, but takes on the same form. the main differences are the number of things you must define to make a functioning gamemode, the points system, respawn system and team mechanics must all be considered.
 
-The ``mod.json``
-----------------
-
-The ``mod.json`` is responsible for governing when, and where your mod is loaded, and follows a layout that is fairly complicated at first glance.
-However, once you get the hang of it, it should be fairly easy to use.
-
-.. code-block:: json
-
-    {
-        "Name" : "SimpleRandomiser",
-        "Description" : "SimpleRandomiser",
-        "Version": "0.1.0",
-        "LoadPriority": 1,
 
 
-The script above defines the pubic and listed details of the mod
+Creating Gamemodes
+------------------
+In this section we will be creating our custom gamemode. this is more complicated than creating setting mods however also allows for more freedom at the cost of being required clientside as well
 
-.. code-block:: json
-    
-            "Scripts": [
-            {
-                "Path": "sh_SimpleRandomiser.gnut",
-                "RunOn": "MP",
-                "ClientCallback": {
-                    "After": "simplerandomiser_init"
-                },
+The Gamemode itself
+^^^^^^^^^^^^^^^^^^^
+We are going to make a simplified version of the "infection" gamemode.
 
-                "ServerCallback": {
-                    "After": "simplerandomiser_init"
-                }
-            }
-        ],
+Lets break it down into steps before we make the gamemode itself
 
-The script above defines both what functions to run, when to run them and WHERE to run them, in this case it runs your ``simplerandomiser_init``, when on multiplayer and for both the server and the client
+1. Set the gamerules such as player count, team layout and score system
+2. force all players on to 1 team at the start of the game
+3. randomly select 1 player as being the zombie
+    * equip this player with the correct weapons
+    * modify their health
+    * provide them a speedboost
+4. have players become zombies on death
+5. have players joining mid way become zombies
+6. end the game when the last player dies.
 
-.. code-block:: json
+Now lets breakdown the callbacks we will need
 
-        "Localisation": [
-            "resource/simplerandomiser_localisation_%language%.txt"
-        ]
+for steps 2 and 5 we will need ``AddCallback_OnClientConnected( PlayerJoined )`` to trigger on join
+
+for step 3 we will need to ``AddCallback_GameStateEnter( eGameState.Playing, StartGame )``
+
+for step 4 we need ``AddCallback_OnPlayerRespawned( RespawnInfected )``
+
+and finally to decide the winner we need a new function we havent seen yet. ``SetTimeoutWinnerDecisionFunc( DecideWinners )``
+
+this function is used to decide the winner when the game runs out of time by calling a function.
+
+now that we know our steps its time to start our initialisation function
+
+Initialisation function
+-----------------------
+
+first, lets declare our game settings
+
+.. code-block:: javascript
+
+    global function SimpleInfection_init
+    void function SimpleInfection_init() {
+        SetSpawnpoint GamemodeOverrde( FFA )// This line makes the player spawn locations like those from ffa
+        SetLoadoutGracePeriodEnabled( false )// we dont want the zombies to be able to change loadouts and grab their guns, so lets disable that
+        SetWeaponDropsEnabled(false )// we dont want zombies grabbing the weapons for dead survivors, so lets disable that.
+        Riff_ForceTitanAvailability( eTitanAvailability.Never )// we dont want zombies to have titans either, so lets disable that
+        Riff_ForceBoostAvailability( eBoostAvailability.Disabled )// we also dont want the zombies grabbing smart pistols and turrets, so lets disable that
+        ClassMP_ForceDisableEpilogue( true )// As the goal is surviving till the timer runs out, we dont need the evac dropship
+
+
+Next lets setup our callbacks:
+
+.. code-block:: javascript
+
+        AddCallback_OnClientConnected( PlayerJoined )
+        AddCallback_GameStateEnter( eGameState.Playing, StartGame )
+        AddCallback_OnPlayerRespawned( RespawnInfected )
+        SetTimeoutWinnerDecisionFunc( DecideWinners )
     }
 
-this defines the path to the language file
+great, now we have our gamemodes initialisation function we need a way for our callbacks to know some things, such as whether the game has started or not, you will see why later
 
-name this file ``mod.json``, and it should go in the mods root folder
+.. code-block:: javascript
 
-Language file
--------------
-This follows a fairly simple template, the only thing of note is that you often get strange behaviour using ``utf-8`` when saving the file instead of using ``utf-16 le``
+    struct {
+        bool HasStarted = false
+    } file
 
-.. code-block::
+Structs like this allow us to store Values that can be accessed elsewhere in the script, without having to pass them as arguments in all our functions. we place them in a struct instead of just defining them as a global variable cannot 
+be modified by a function in squirrel, wheras a struct like this one can.
 
-    "lang"
-    {
-        "Language" "english"
-        "Tokens"
-        {
-            "MODE_SETTING_CATEGORY_SIMPLERANDOMISER" "Simple Randomiser"
-            "SIMPLERANDOMISER" "Randomise"
+to access a variable in a struct you must format it using the name of the stuct followed by the variable itself, in this case ``file.HasStarted``
+
+Main functions
+--------------
+
+Now it time to start writing our callbacks
+
+.. code-block:: javascript
+
+    void function PlayerJoined(entity player){
+        if (file.HasStarted){
+            InfectPlayer( player, player)
+            RespawnInfected( player )
+        }
+        else{
+            SetTeam( player, 0)
         }
     }
 
-Name this file ``simplerandomiser_localisation_english.txt`` and place it in the ``yourmodsname/mod/resources/`` folder.
-
-
-Creating the mod
-----------------
-lets actually get started then on making a setting mod, this will involve the making of 3 things for a simple one. a mod.json, a language file and the mod itself
-lets get started with the mod itself
-To begin with we need to answer the simple question of "what are we making" for our example lets make a simple randomiser than randomises your weapon on each spawn.
-Because this is a setting mod it will only need to be installed on the serverside but it also wont appear in the browser unless the host puts it in the name.
-so lets get started with our **initial function**
-
-The initial function
-^^^^^^^^^^^^^^^^^^^^
-The initial function is the function that is called on server startup and contains 2 important things.
-the **callbacks** and the **setting buttons** to add the settings to the private match settings we need to use a new function:
-
-``AddPrivateMatchModeSettingEnum("string", "string", ["#SETTING_ENABLED", "#SETTING_ENABLED"], "0")``
-
-this might look complicated, but really its just (Category, settingname, [setting options], default value) however we use terms like ``"#MODE_SETTING_CATEGORY_RANDOMISER"`` in place of the category name so that we can create language files for different languages.
-(we will make that later)
+This manages what happens when a player joins, but it calls a function we dont have yet ``InfectPlayer`` so lets define it now
 
 .. code-block:: javascript
 
-    void function simplerandomiser_init(){
-        AddPrivateMatchModeSettingEnum("#MODE_SETTING_CATEGORY_SIMPLERANDOMISER", "SimpleRandomiser", ["#SETTING_ENABLED", "#SETTING_ENABLED"], "0")
-        
-        #if SERVER
-        AddCallback_OnPlayerRespawned(GiveRandomGun)
-        #endif
+    void function InfectPlayer(entity player, entity attacker){
+        SetTeam( player, 1)
+        if ((GetPlayerArrayOfteam(0).len()) == 0){
+            SetRespawnsEnabled(false)
+            SetKillcamsEnabled(false)
+            SetWinner( 1 )
+        }
     }
 
-As you may have noticed, checking if it is a server is a special case, so we use ``#if SERVER`` and ``#endif`` instead of the usual ``if(thing){stuff}``
+This function simply changes the players team, then checks if there are any survivors left, and if not sets the zombies as the winners.
 
-Now that our initial function is created we now have the game triggering `GiveRandomGun` on spawn, but we dont have any such function, so lets make one. but before we can do that, we need to know what weapons we can equip. 
-for this we define an array 
-
-.. code-block:: javascript
-
-    array<string> pilotWeapons = [
-            "mp_weapon_alternator_smg",
-            "mp_weapon_autopistol",
-            "mp_weapon_car",
-            "mp_weapon_dmr"]
-    
-here we have defined an array with only 4 weapons in it, you can make this list as long or as short as you like but remember to seperate all but the last item with a ``,``
-
-Now lets make a function to check if you enabled the setting    
-
+Now for the script that chooses the first zombie, in order to allow more time for players to join lets put a delay on it using a ``thread``
 
 .. code-block:: javascript
 
-        bool function SimpleRandomiserEnabled() 
-            return GetCurrentPlaylistVarInt("SimpleRandomiser", 0) == 1
+    void function StartGame(){
+        firstinfected = GetPlayerArray()[RandomInt(GetPlayerArray().len())]
+        InfectPlayer( firstinfected, firstinfected)
+        file.HasStarted = true
+    }
 
+This function changes the file.HasStarted value to true and randomly selects a player from the player array as a target for the infectplayer function. 
 
-Randomise function
-^^^^^^^^^^^^^^^^^^
-As we already know its going to call ``GiveRandomGun`` on respawn, lets define that now.
-First we strip any existing weapons:
+Next lets create the function that provides the zombies the correct equipment
 
 .. code-block:: javascript
 
-    void function GiveRandomGun(entity player){
+    void function RespawnInfected( entity player ){
+        if (player.GetTeam() != 1){//this makes sure players dont accidentally get given zombie weapons when first spawning as a survivor
+            return
+        }
+        //lets give them stim, followed by increased air accel
+        StimPlayer( player, 9999)
+        player.kv.airAcceleration = 2000
+        //lets give them less health than normal
+        payer.SetMaxHealth(20)
+        //lets set their loadout
         foreach ( entity weapon in player.GetMainWeapons() )
             player.TakeWeaponNow( weapon.GetWeaponClassName() )
 
-this iterates through each weapon and removes them individually. 
+        foreach ( entity weapon in player.GetOffhandWeapons() )
+            player.TakeWeaponNow( weapon.GetWeaponClassName() )
 
-Then lets give them a new, random weapon by selecting a random item from our previous array:
+        player.GiveOffhandWeapon( "melee_pilot_emptyhanded", OFFHAND_MELEE )
+        //unfortunately the game requires that you have a weapon of some kind in order to use secondaries, so lets give zombies an MGL
+        player.GiveWeapon( "mp_weapon_mgl" )
+    }
+
+Finally lets define what occurs when the match ends
 
 .. code-block:: javascript
 
-    player.GiveWeapon(pilotweapons[RandomInt(pilotweapons.len())])
-
-And done, surprisingly short script huh?
-
-.. code-block:: javascript
-
-    void function simplerandomiser_init(){
-        AddPrivateMatchModeSettingEnum("#MODE_SETTING_CATEGORY_SIMPLERANDOMISER", "SimpleRandomiser", ["#SETTING_ENABLED", "#SETTING_ENABLED"], "0")
-        
-        #if SERVER
-        AddCallback_OnPlayerRespawned(GiveRandomGun)
-        #endif
+    void function DecideWinners(){
+        SetRespawnsEnabled( false )
+        SetKillcamsEnabled( false )
+        return 0
     }
 
-    array<string> pilotWeapons = [
-            "mp_weapon_alternator_smg",
-            "mp_weapon_autopistol",
-            "mp_weapon_car",
-            "mp_weapon_dmr"]
+Now we can save this file as _gamemode_simpleinf.gnut and place it in
+``"ourmodsname"/mod/scripts/vscripts/gamemodes``
 
-    void function GiveRandomGun(entity player){
-    foreach ( entity weapon in player.GetMainWeapons() )
-        player.TakeWeaponNow( weapon.GetWeaponClassName() )
-    player.GiveWeapon(pilotweapons[RandomInt(pilotweapons.len())])
-    }
-
-Name this ``sh_SimpleRandomiser.gnut`` and place it in the ``yourmodsname/mod/scripts/vscripts/`` folder
